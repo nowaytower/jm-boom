@@ -12,8 +12,8 @@
 | 平台 | 文件 | 启动方式 |
 |---|---|---|
 | Windows 10/11 x64 | `JM-Boom-vX.Y.Z-Windows-x64.zip` | 解压后双击「启动 JM Boom.bat」 |
-| Linux x64 | `JM-Boom-vX.Y.Z-Linux-x64.tar.gz` | 解压后 `./run.sh`（需 glibc 2.35+） |
-| Linux arm64 | `JM-Boom-vX.Y.Z-Linux-arm64.tar.gz` | 解压后 `./run.sh`（需 glibc 2.39+，树莓派/ARM 服务器） |
+| Linux x64 | `JM-Boom-vX.Y.Z-Linux-x64.tar.gz` | 解压后 `./run.sh`（静态编译，不依赖 glibc） |
+| Linux arm64 | `JM-Boom-vX.Y.Z-Linux-arm64.tar.gz` | 解压后 `./run.sh`（静态编译，树莓派/ARM 服务器通用） |
 | macOS Apple Silicon | `JM-Boom-vX.Y.Z-macOS-arm64.tar.gz` | 解压后 `./run.sh` |
 | macOS Intel | `JM-Boom-vX.Y.Z-macOS-x64.tar.gz` | 解压后 `./run.sh` |
 | Docker（服务器） | `ghcr.io/nowaytower/jm-boom:X.Y.Z` | `docker compose up -d` |
@@ -41,7 +41,7 @@ sha256sum -c SHA256SUMS.txt
 
 **Linux 说明**
 
-- 32 位系统、musl（Alpine）环境没有对应包，用 Docker 版本更省事
+- Linux 包是 musl 静态链接，Debian 11 / Ubuntu 20.04 / Alpine 都能直接跑；只有 32 位系统需要改用 Docker
 - 需要图形界面浏览器的场景（桌面 Linux）同样浏览器访问 3000 端口即可
 
 ## 发行流程（维护者）

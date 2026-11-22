@@ -113,12 +113,12 @@ jobs:
             kind: zip
           - label: Linux x64
             runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             asset: Linux-x64.tar.gz
             kind: tar
           - label: Linux arm64
             runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             asset: Linux-arm64.tar.gz
             kind: tar
           - label: macOS arm64
@@ -154,6 +154,12 @@ jobs:
             echo "::error::目标需要 ${want}，但构建机是 ${host}"
             exit 1
           fi
+
+      # Linux 用 musl 静态编译：二进制不依赖 glibc 版本，Debian 11/Ubuntu 20.04 也能直接跑
+      - name: 安装 musl 工具链
+        if: contains(matrix.target, 'linux-musl')
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -298,8 +304,8 @@ jobs:
           | 平台 | 文件 | 说明 |
           |---|---|---|
           | Windows x64 | \`JM-Boom-v${VERSION}-Windows-x64.zip\` | 解压后双击「启动 JM Boom.bat」 |
-          | Linux x64 | \`JM-Boom-v${VERSION}-Linux-x64.tar.gz\` | 解压后 \`./run.sh\`（需要 glibc 2.35+） |
-          | Linux arm64 | \`JM-Boom-v${VERSION}-Linux-arm64.tar.gz\` | 解压后 \`./run.sh\`（需要 glibc 2.39+） |
+          | Linux x64 | \`JM-Boom-v${VERSION}-Linux-x64.tar.gz\` | 解压后 \`./run.sh\`（静态编译，无 glibc 依赖） |
+          | Linux arm64 | \`JM-Boom-v${VERSION}-Linux-arm64.tar.gz\` | 解压后 \`./run.sh\`（静态编译，无 glibc 依赖） |
           | macOS Apple Silicon | \`JM-Boom-v${VERSION}-macOS-arm64.tar.gz\` | 解压后 \`./run.sh\` |
           | macOS Intel | \`JM-Boom-v${VERSION}-macOS-x64.tar.gz\` | 解压后 \`./run.sh\` |
           | Docker | \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/jm-boom:${VERSION}\` | 服务器部署 |
