@@ -122,12 +122,12 @@ jobs:
             asset: Linux-arm64.tar.gz
             kind: tar
           - label: macOS arm64
-            runner: macos-14
+            runner: macos-15
             target: aarch64-apple-darwin
             asset: macOS-arm64.tar.gz
             kind: tar
           - label: macOS x64
-            runner: macos-13
+            runner: macos-15-intel
             target: x86_64-apple-darwin
             asset: macOS-x64.tar.gz
             kind: tar
