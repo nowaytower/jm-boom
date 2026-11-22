@@ -1,13 +1,72 @@
 # JM Boom
 
-当前分支提供通过 `Docker` 部署的前后端分离项目。
+当前分支是「Rust 服务端 + React 前端」的前后端分离项目，有两种用法：
+
+- **便携版**：下载对应平台的压缩包，解压双击/`./run.sh` 即可，浏览器打开 <http://localhost:3000>（见[下载](#下载多平台发行包)）
+- **Docker**：服务器上跑一个容器，适合长期挂机和多设备访问（见[Docker 部署](#docker-部署)）
+
+## 下载（多平台发行包）
+
+每次发版（推 `v*.*.*` tag）由 GitHub Actions 自动构建 5 个平台的原生包，全部挂在 [Releases](https://github.com/nowaytower/jm-boom/releases) 下，不需要自己在本地编译：
+
+| 平台 | 文件 | 启动方式 |
+|---|---|---|
+| Windows 10/11 x64 | `JM-Boom-vX.Y.Z-Windows-x64.zip` | 解压后双击「启动 JM Boom.bat」 |
+| Linux x64 | `JM-Boom-vX.Y.Z-Linux-x64.tar.gz` | 解压后 `./run.sh`（需 glibc 2.35+） |
+| Linux arm64 | `JM-Boom-vX.Y.Z-Linux-arm64.tar.gz` | 解压后 `./run.sh`（需 glibc 2.39+，树莓派/ARM 服务器） |
+| macOS Apple Silicon | `JM-Boom-vX.Y.Z-macOS-arm64.tar.gz` | 解压后 `./run.sh` |
+| macOS Intel | `JM-Boom-vX.Y.Z-macOS-x64.tar.gz` | 解压后 `./run.sh` |
+| Docker（服务器） | `ghcr.io/nowaytower/jm-boom:X.Y.Z` | `docker compose up -d` |
+
+每个包都自带服务端二进制、前端静态文件和 `README.txt`，**解压即用**，不依赖 Python / Node / 数据库。运行后浏览器访问 <http://localhost:3000>，账号与缓存写在同目录的 `data/` 里（想搬家就整目录拷走）。
+
+```bash
+# 校验下载是否完整（同一 Release 里的 SHA256SUMS.txt）
+sha256sum -c SHA256SUMS.txt
+```
+
+**Windows 说明**
+
+- 解压到普通目录即可，别放在 `C:\Program Files` 这类需要管理员权限的位置
+- 双击「启动 JM Boom.bat」会开一个黑窗口，浏览器自动弹出；**关掉黑窗口服务就停了**
+- 首次运行 Windows 防火墙可能询问是否允许联网，选「允许」；只在本机用可以取消勾选公用网络
+- 二进制没有代码签名，SmartScreen 可能提示「未知发布者」→ 更多信息 → 仍要运行
+- 想开机自启：把「启动 JM Boom.bat」的快捷方式放进 `shell:startup` 目录
+
+**macOS 说明**
+
+- 首次运行若提示「已损坏，无法打开」或「无法验证开发者」，在终端执行
+  `xattr -dr com.apple.quarantine ./jm-boom-server` 再运行
+- Apple Silicon 机器不要下 `macOS-x64`（会走 Rosetta，性能与兼容性都差）
+
+**Linux 说明**
+
+- 32 位系统、musl（Alpine）环境没有对应包，用 Docker 版本更省事
+- 需要图形界面浏览器的场景（桌面 Linux）同样浏览器访问 3000 端口即可
+
+## 发行流程（维护者）
+
+版本号在三个地方保持一致：`server/Cargo.toml`、`server/Cargo.lock` 里 `jm-boom-server` 条目、`web/package.json`。改完版本号后：
+
+```bash
+git commit -am "chore(release): bump version to X.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+推 tag 会同时触发两个工作流：
+
+- `release.yml`：构建 Windows x64 / Linux x64 / Linux arm64 / macOS arm64 / macOS x64 五个原生包 + `SHA256SUMS.txt`，创建 GitHub Release 并上传产物（跑在各自的官方 runner 上，无模拟）
+- `docker-publish.yml`：构建 `ghcr.io/<仓库归属>/jm-boom` 多架构镜像（amd64 + arm64）
+
+不想打 tag 也能试构建：Actions → `release` → Run workflow，填版本号、`publish` 保持关闭，产物只在本次运行的 Artifacts 里，不会动 Release。
 
 ## Docker 部署
 
 公开镜像：
 
 ```text
-ghcr.io/ppxb/jm-boom
+ghcr.io/nowaytower/jm-boom
 ```
 
 直接使用 Docker 运行（请替换访问密码）：
@@ -20,7 +79,7 @@ docker run -d \
   -p 3000:3000 \
   -v jm-boom-data:/app/data \
   -e JM_BOOM_ACCESS_PASSWORD="change-this-password" \
-  ghcr.io/ppxb/jm-boom:latest
+  ghcr.io/nowaytower/jm-boom:latest
 ```
 
 使用仓库中的 Compose 部署：

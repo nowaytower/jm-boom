@@ -1,0 +1,330 @@
+# 构建多平台发行包并发布 Releases
+#
+# 触发：
+#   1) 推 tag（形如 v0.7.3）→ 自动构建 + 创建/更新对应的 GitHub Release
+#   2) 手动 Run workflow（填版本号）→ 只构建并产出 artifact；勾 publish 才写 Release
+#
+# 产物（每个版本一套，全部挂在同一个 Release 下）：
+#   JM-Boom-vX.Y.Z-Windows-x64.zip      exe + static + 双击启动.bat
+#   JM-Boom-vX.Y.Z-Linux-x64.tar.gz     jm-boom-server + static + run.sh
+#   JM-Boom-vX.Y.Z-Linux-arm64.tar.gz
+#   JM-Boom-vX.Y.Z-macOS-arm64.tar.gz
+#   JM-Boom-vX.Y.Z-macOS-x64.tar.gz
+#   SHA256SUMS.txt                      校验和
+#
+# 说明：项目现在是「Rust 服务端 + React 前端」架构，运行方式是本地跑服务再用浏览器打开，
+# 所以发行包是便携版压缩包（解压即用），不是 v0.4.x 那套 Tauri 安装包（msi/dmg/AppImage）。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不含 v，例如 0.7.3）"
+        required: true
+        type: string
+      publish:
+        description: "构建完成后创建/更新 Release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: jm-boom-server
+
+jobs:
+  version:
+    name: 解析版本号
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: 解析并校验
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版本号格式不对：'${version}'（应形如 0.7.3）"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "版本号：${version}"
+
+  web:
+    name: 构建前端
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: 安装依赖
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建静态站点
+        working-directory: web
+        run: pnpm run build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    name: 构建 ${{ matrix.label }}
+    needs: [version, web]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: Windows-x64.zip
+            kind: zip
+          - label: Linux x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: Linux-x64.tar.gz
+            kind: tar
+          - label: Linux arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: Linux-arm64.tar.gz
+            kind: tar
+          - label: macOS arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            asset: macOS-arm64.tar.gz
+            kind: tar
+          - label: macOS x64
+            runner: macos-13
+            target: x86_64-apple-darwin
+            asset: macOS-x64.tar.gz
+            kind: tar
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      LABEL: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # 硬性校验：runner 架构要和目标一致，避免悄悄变成交叉/模拟构建
+      - name: 校验原生架构
+        shell: bash
+        run: |
+          set -euo pipefail
+          host="$(uname -m)"
+          case "${{ matrix.target }}" in
+            x86_64-*)  want="x86_64" ;;
+            aarch64-*) want="aarch64|arm64" ;;
+            *) echo "::error::未知目标 ${{ matrix.target }}"; exit 1 ;;
+          esac
+          echo "runner=$(uname -s) host=${host} target=${{ matrix.target }}"
+          if ! echo "${host}" | grep -Eq "^(${want})$"; then
+            echo "::error::目标需要 ${want}，但构建机是 ${host}"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server -> target
+          key: ${{ matrix.target }}
+
+      - name: 编译服务端
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} --manifest-path server/Cargo.toml
+
+      - name: 取前端静态文件
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: stage-static
+
+      - name: 组装发行包
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="package/JM-Boom-v${VERSION}"
+          mkdir -p "${stage}/static" "${stage}/data"
+
+          case "${{ matrix.target }}" in
+            *windows*) bin="server/target/${{ matrix.target }}/release/${BIN}.exe" ;;
+            *)         bin="server/target/${{ matrix.target }}/release/${BIN}" ;;
+          esac
+          cp "${bin}" "${stage}/"
+          cp -R stage-static/. "${stage}/static/"
+
+          if [ "${{ matrix.kind }}" = "zip" ]; then
+            # Windows 启动脚本：切到自身目录 → 打开浏览器 → 前台跑服务（关窗口即停）
+            printf '@echo off\r\n'                                                  >  "${stage}/启动 JM Boom.bat"
+            printf 'chcp 65001 >nul\r\n'                                            >> "${stage}/启动 JM Boom.bat"
+            printf 'cd /d "%%~dp0"\r\n'                                             >> "${stage}/启动 JM Boom.bat"
+            printf 'echo JM Boom 正在启动，浏览器会自动打开 http://localhost:3000\r\n' >> "${stage}/启动 JM Boom.bat"
+            printf 'echo 关闭这个窗口即停止服务。\r\n'                                  >> "${stage}/启动 JM Boom.bat"
+            printf 'start "" cmd /c "timeout /t 2 >nul & start http://localhost:3000"\r\n' >> "${stage}/启动 JM Boom.bat"
+            printf '%s.exe\r\n' "${BIN}"                                            >> "${stage}/启动 JM Boom.bat"
+            printf 'pause\r\n'                                                      >> "${stage}/启动 JM Boom.bat"
+          else
+            {
+              echo '#!/usr/bin/env bash'
+              echo '# JM Boom 启动脚本：在当前目录运行服务，浏览器打开 http://localhost:3000'
+              echo 'set -euo pipefail'
+              echo 'cd "$(dirname "$0")"'
+              echo 'chmod +x ./jm-boom-server 2>/dev/null || true'
+              echo 'echo "JM Boom 启动中，浏览器访问 http://localhost:3000（Ctrl+C 停止）"'
+              echo 'if [ "$(uname -s)" = "Darwin" ]; then ( sleep 1; open http://localhost:3000 >/dev/null 2>&1 ) & fi'
+              echo 'exec ./jm-boom-server'
+            } > "${stage}/run.sh"
+            chmod +x "${stage}/run.sh"
+          fi
+
+          {
+            echo "JM Boom v${VERSION} — ${LABEL}"
+            echo
+            echo "1. 解压到任意目录（路径别带特殊字符）"
+            if [ "${LABEL}" = "Windows x64" ]; then
+              echo "2. 双击「启动 JM Boom.bat」"
+            else
+              echo "2. 终端执行 ./run.sh（或直接 ./jm-boom-server）"
+            fi
+            echo "3. 浏览器访问 http://localhost:3000"
+            echo "4. 数据库、缓存、下载都在同目录的 data/ 里，备份这个目录即可"
+            echo
+            echo "可选环境变量："
+            echo "  JM_BOOM_ACCESS_PASSWORD  访问密码（不设则本机直接进入）"
+            echo "  RUST_LOG                 日志级别，例如 info"
+            echo
+            echo "macOS 首次运行若提示「已损坏」或未验证开发者："
+            echo "  xattr -dr com.apple.quarantine ./jm-boom-server"
+            echo
+            echo "本包是便携版，不含安装程序；服务固定监听 3000 端口。"
+          } > "${stage}/README.txt"
+
+          asset="JM-Boom-v${VERSION}-${{ matrix.asset }}"
+          if [ "${{ matrix.kind }}" = "zip" ]; then
+            ( cd package && 7z a -tzip -mx=9 "../${asset}" "JM-Boom-v${VERSION}" >/dev/null )
+          else
+            COPYFILE_DISABLE=1 tar -czf "${asset}" -C package "JM-Boom-v${VERSION}"
+          fi
+          ls -lh "${asset}"
+
+      - name: 上传发行包
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkg-${{ matrix.target }}
+          path: JM-Boom-v${{ needs.version.outputs.version }}-${{ matrix.asset }}
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    name: 发布 Release
+    needs: [version, build]
+    if: github.ref_type == 'tag' || github.event.inputs.publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: v${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 取回全部发行包
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: pkg-*
+          merge-multiple: true
+
+      - name: 生成校验和
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -lh
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 生成更新日志
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .github/cliff.toml
+          args: --current
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: 组装 Release 说明
+        run: |
+          set -euo pipefail
+          cat > notes.md <<EOF
+          ## 下载
+
+          | 平台 | 文件 | 说明 |
+          |---|---|---|
+          | Windows x64 | \`JM-Boom-v${VERSION}-Windows-x64.zip\` | 解压后双击「启动 JM Boom.bat」 |
+          | Linux x64 | \`JM-Boom-v${VERSION}-Linux-x64.tar.gz\` | 解压后 \`./run.sh\`（需要 glibc 2.35+） |
+          | Linux arm64 | \`JM-Boom-v${VERSION}-Linux-arm64.tar.gz\` | 解压后 \`./run.sh\`（需要 glibc 2.39+） |
+          | macOS Apple Silicon | \`JM-Boom-v${VERSION}-macOS-arm64.tar.gz\` | 解压后 \`./run.sh\` |
+          | macOS Intel | \`JM-Boom-v${VERSION}-macOS-x64.tar.gz\` | 解压后 \`./run.sh\` |
+          | Docker | \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/jm-boom:${VERSION}\` | 服务器部署 |
+
+          运行后浏览器打开 <http://localhost:3000>；数据保存在程序目录的 \`data/\`。
+          \`SHA256SUMS.txt\` 里是全部产物的校验和（\`sha256sum -c SHA256SUMS.txt\`）。
+
+          ---
+
+          EOF
+          cat CHANGELOG.md >> notes.md
+
+      - name: 创建或复用 Release
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在，更新说明并覆盖产物"
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "JM Boom ${TAG}" --notes-file notes.md
+          else
+            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+              --title "JM Boom ${TAG}" --notes-file notes.md --draft
+          fi
+
+      - name: 上传产物
+        run: gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber dist/*
+
+      - name: 发布（去掉草稿状态）
+        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
